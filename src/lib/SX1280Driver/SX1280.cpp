@@ -183,8 +183,8 @@ void SX1280Driver::Config(uint8_t bw, uint8_t sf, uint8_t cr, uint32_t regfreq,
     }
     SetFrequencyReg(regfreq, SX12XX_Radio_All);
 
-    uint16_t dio1Mask = SX1280_IRQ_TX_DONE | SX1280_IRQ_RX_DONE;
-    uint16_t irqMask  = SX1280_IRQ_TX_DONE | SX1280_IRQ_RX_DONE | SX1280_IRQ_SYNCWORD_VALID | SX1280_IRQ_SYNCWORD_ERROR | SX1280_IRQ_CRC_ERROR;
+    uint16_t dio1Mask = SX1280_IRQ_TX_DONE | SX1280_IRQ_RX_DONE | SX1280_IRQ_CAD_DONE | SX1280_IRQ_CAD_DETECTED;
+    uint16_t irqMask  = SX1280_IRQ_TX_DONE | SX1280_IRQ_RX_DONE | SX1280_IRQ_SYNCWORD_VALID | SX1280_IRQ_SYNCWORD_ERROR | SX1280_IRQ_CRC_ERROR | SX1280_IRQ_CAD_DONE | SX1280_IRQ_CAD_DETECTED;
     SetDioIrqParams(irqMask, dio1Mask);
 }
 
@@ -735,6 +735,20 @@ void ICACHE_RAM_ATTR SX1280Driver::IsrCallback(SX12XX_Radio_Number_t radioNumber
         }
 #endif
         instance->isFirstRxIrq = false;   // RX isr is already fired in this period. (reset to true in tock)
+    }
+    else if (irqStatus & (SX1280_IRQ_CAD_DONE | SX1280_IRQ_CAD_DETECTED))
+    {
+        // After CAD the radio auto-returns to STDBY_RC. Notify the low-power-search
+        // state machine so it can decide whether to open an RX window or sleep.
+        if (irqStatus & SX1280_IRQ_CAD_DETECTED)
+        {
+            instance->CADDetectedCallback();
+        }
+        else
+        {
+            instance->CADDoneCallback();
+        }
+        irqClearRadio = SX12XX_Radio_All;
     }
     else if (irqStatus == SX1280_IRQ_RADIO_NONE)
     {

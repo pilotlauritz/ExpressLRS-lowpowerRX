@@ -253,6 +253,11 @@ static uint32_t BindingRateChangeTime;
 
 extern void setWifiUpdateMode();
 void reconfigureSerial();
+static void startSearchReceiver(uint32_t now);
+#if defined(LOWPOWER_SEARCH) && defined(RADIO_SX128X)
+static void lpsCadDoneISR();
+static void lpsCadDetectedISR();
+#endif
 
 uint8_t getLq()
 {
@@ -860,7 +865,7 @@ void LostConnection(bool resumeRx)
         // If not resumRx, Radio will be left in SX127x_OPMODE_STANDBY / SX1280_MODE_STDBY_XOSC
         if (resumeRx)
         {
-            Radio.RXnb();
+            startSearchReceiver(millis());
         }
     }
 }
@@ -1677,6 +1682,10 @@ static void setupRadio()
 
     Radio.RXdoneCallback = &RXdoneISR;
     Radio.TXdoneCallback = &TXdoneISR;
+#if defined(LOWPOWER_SEARCH) && defined(RADIO_SX128X)
+    Radio.CADDoneCallback = &lpsCadDoneISR;
+    Radio.CADDetectedCallback = &lpsCadDetectedISR;
+#endif
 
     scanIndex = config.GetRateInitialIdx();
     for (int i=0 ; i<RATE_MAX ; i++)
@@ -1706,6 +1715,119 @@ static void updateTelemetryBurst()
     TelemetrySender.UpdateTelemetryRate(hz, ExpressLRS_currTlmDenom, telemetryBurstMax);
 }
 
+#if defined(LOWPOWER_SEARCH) && defined(RADIO_SX128X)
+// Low-power search: while disconnected, replace continuous RX with a duty-cycled
+// CAD scan. The radio draws ~2 mA during a short CAD cycle (vs ~10 mA continuous),
+// auto-returns to STDBY_RC between cycles, and raises DIO IRQs so the main loop
+// can decide whether to open a real RX window (activity detected) or sleep and
+// retry. Light-sleep for the MCU lands in a follow-up commit.
+
+enum LpsState : uint8_t
+{
+    LPS_IDLE,    // not engaged (link up, binding, etc.)
+    LPS_CAD,     // CAD window active, awaiting IRQ
+    LPS_RX,      // full RX open after CAD detected activity
+    LPS_SLEEP,   // between CAD windows
+};
+
+#define LPS_CAD_SYMBOLS     SX1280_LORA_CAD_04_SYMBOLS
+#define LPS_SLEEP_MS        60    // ms between CAD attempts
+#define LPS_RX_WINDOW_MS    25    // ms in full RX after detection before re-arming CAD
+#define LPS_CAD_TIMEOUT_MS  100   // safety: if no CAD IRQ within this window, retry
+
+static volatile LpsState lpsState = LPS_IDLE;
+static volatile bool lpsCadEventPending = false;
+static volatile bool lpsCadEventHit = false;
+static uint32_t lpsStateEntered = 0;
+
+static void ICACHE_RAM_ATTR lpsCadDoneISR()
+{
+    lpsCadEventHit = false;
+    lpsCadEventPending = true;
+}
+
+static void ICACHE_RAM_ATTR lpsCadDetectedISR()
+{
+    lpsCadEventHit = true;
+    lpsCadEventPending = true;
+}
+
+static void lpsSetState(LpsState newState, uint32_t now)
+{
+    lpsState = newState;
+    lpsStateEntered = now;
+    switch (newState)
+    {
+    case LPS_CAD:
+        Radio.ConfigCad(LPS_CAD_SYMBOLS);
+        Radio.EnterCad();
+        break;
+    case LPS_RX:
+        Radio.RXnb();
+        break;
+    case LPS_SLEEP:
+    case LPS_IDLE:
+    default:
+        // Radio auto-returned to STDBY_RC after CAD; nothing to do.
+        break;
+    }
+}
+
+static void lowPowerSearchBegin(uint32_t now)
+{
+    lpsSetState(LPS_CAD, now);
+}
+
+static void lowPowerSearchStop()
+{
+    lpsState = LPS_IDLE;
+    lpsCadEventPending = false;
+}
+
+static void lowPowerSearchTick(uint32_t now)
+{
+    if (lpsCadEventPending)
+    {
+        lpsCadEventPending = false;
+        lpsSetState(lpsCadEventHit ? LPS_RX : LPS_SLEEP, now);
+        return;
+    }
+
+    uint32_t elapsed = now - lpsStateEntered;
+    switch (lpsState)
+    {
+    case LPS_CAD:
+        if (elapsed > LPS_CAD_TIMEOUT_MS)
+            lpsSetState(LPS_CAD, now); // IRQ missed — retry
+        break;
+    case LPS_RX:
+        if (elapsed > LPS_RX_WINDOW_MS)
+            lpsSetState(LPS_CAD, now); // no packet in window — re-arm scan
+        break;
+    case LPS_SLEEP:
+        if (elapsed >= LPS_SLEEP_MS)
+            lpsSetState(LPS_CAD, now);
+        break;
+    case LPS_IDLE:
+    default:
+        break;
+    }
+}
+#endif // LOWPOWER_SEARCH && RADIO_SX128X
+
+// Wrapper: start RX in the disconnected-search state. Switches to CAD-based
+// duty-cycling when LOWPOWER_SEARCH is enabled on an SX1280 target; otherwise
+// stock continuous RX.
+static void startSearchReceiver(uint32_t now)
+{
+#if defined(LOWPOWER_SEARCH) && defined(RADIO_SX128X)
+    lowPowerSearchBegin(now);
+#else
+    (void)now;
+    Radio.RXnb();
+#endif
+}
+
 /* If not connected will rotate through the RF modes looking for sync
  * and blink LED
  */
@@ -1725,7 +1847,7 @@ static void cycleRfMode(unsigned long now)
         LQCalcDVDA.reset100();
         // Display the current air rate to the user as an indicator something is happening
         scanIndex++;
-        Radio.RXnb();
+        startSearchReceiver(now);
         DBGLN("%u", ExpressLRS_currAirRate_Modparams->interval);
 
         // Skip unsupported modes for hardware with only a single LR1121 or with a single RF path
@@ -2214,6 +2336,19 @@ void loop()
     }
 
     cycleRfMode(now);
+
+#if defined(LOWPOWER_SEARCH) && defined(RADIO_SX128X)
+    if (connectionState == disconnected && !InBindingMode)
+    {
+        if (lpsState == LPS_IDLE)
+            lowPowerSearchBegin(now);
+        lowPowerSearchTick(now);
+    }
+    else if (lpsState != LPS_IDLE)
+    {
+        lowPowerSearchStop();
+    }
+#endif
 
     uint32_t localLastValidPacket = LastValidPacket; // Required to prevent race condition due to LastValidPacket getting updated from ISR
     if ((connectionState == connected) && ((int32_t)ExpressLRS_currAirRate_RFperfParams->DisconnectTimeoutMs < (int32_t)(now - localLastValidPacket))) // check if we lost conn.

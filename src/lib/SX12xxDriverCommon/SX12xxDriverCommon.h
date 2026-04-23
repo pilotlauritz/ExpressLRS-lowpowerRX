@@ -26,14 +26,22 @@ public:
 
     SX12xxDriverCommon():
         RXdoneCallback(nullCallbackRx),
-        TXdoneCallback(nullCallbackTx) {}
+        TXdoneCallback(nullCallbackTx),
+        CADDoneCallback(nullCallbackCad),
+        CADDetectedCallback(nullCallbackCad) {}
 
     static bool ICACHE_RAM_ATTR nullCallbackRx(rx_status) {return false;}
     static void ICACHE_RAM_ATTR nullCallbackTx() {}
+    static void ICACHE_RAM_ATTR nullCallbackCad() {}
 
     ///////Callback Function Pointers/////
     bool (*RXdoneCallback)(rx_status crcFail); //function pointer for callback
     void (*TXdoneCallback)(); //function pointer for callback
+    // CAD callbacks fire from the radio ISR when a Channel Activity Detection cycle finishes.
+    // CADDetectedCallback runs when activity (preamble) was seen; CADDoneCallback always fires
+    // at the end of the CAD window. Used by the low-power-search state machine.
+    void (*CADDoneCallback)();
+    void (*CADDetectedCallback)();
 
     #define RXBuffSize 16
     WORD_ALIGNED_ATTR uint8_t RXdataBuffer[RXBuffSize];
@@ -79,6 +87,8 @@ protected:
     {
         RXdoneCallback = nullCallbackRx;
         TXdoneCallback = nullCallbackTx;
+        CADDoneCallback = nullCallbackCad;
+        CADDetectedCallback = nullCallbackCad;
     }
 
     /**
