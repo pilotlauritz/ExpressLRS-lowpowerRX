@@ -35,6 +35,12 @@ public:
     void TXnb(uint8_t * data, SX12XX_Radio_Number_t radioNumber);
     void RXnb();
 
+    // Channel Activity Detection — configure CAD symbol count, then enter CAD via SetMode(SX1280_MODE_CAD).
+    // On completion, DIO fires SX1280_IRQ_CAD_DONE (+ SX1280_IRQ_CAD_DETECTED if preamble seen),
+    // and the radio auto-returns to STDBY_RC. Used for low-power-search duty-cycling.
+    void ConfigCad(uint8_t cadSymbolNum);
+    void EnterCad();
+
     uint16_t GetIrqStatus(SX12XX_Radio_Number_t radioNumber);
     void ClearIrqStatus(uint16_t irqMask, SX12XX_Radio_Number_t radioNumber);
 

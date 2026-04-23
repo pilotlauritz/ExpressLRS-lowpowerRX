@@ -213,6 +213,16 @@ void ICACHE_RAM_ATTR SX1280Driver::CommitOutputPower()
     hal.WriteCommand(SX1280_RADIO_SET_TXPARAMS, buf, sizeof(buf), SX12XX_Radio_All);
 }
 
+void ICACHE_RAM_ATTR SX1280Driver::ConfigCad(uint8_t cadSymbolNum)
+{
+    hal.WriteCommand(SX1280_RADIO_SET_CADPARAMS, cadSymbolNum, SX12XX_Radio_All);
+}
+
+void ICACHE_RAM_ATTR SX1280Driver::EnterCad()
+{
+    SetMode(SX1280_MODE_CAD, SX12XX_Radio_All);
+}
+
 void SX1280Driver::SetMode(SX1280_RadioOperatingModes_t OPmode, SX12XX_Radio_Number_t radioNumber)
 {
     /*
@@ -265,6 +275,8 @@ void SX1280Driver::SetMode(SX1280_RadioOperatingModes_t OPmode, SX12XX_Radio_Num
         break;
 
     case SX1280_MODE_CAD:
+        // SX1280 SET_CAD is a parameterless opcode; dummy byte is discarded by the radio.
+        hal.WriteCommand(SX1280_RADIO_SET_CAD, (uint8_t)0x00, radioNumber);
         break;
 
     default:
