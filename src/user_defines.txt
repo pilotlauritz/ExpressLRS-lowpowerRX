@@ -120,5 +120,14 @@
 # Also logs forced resyncs when a packet is delayed or missed.
 #-DDEBUG_OPENTX_SYNC
 
+
+### LOW-POWER SEARCH (RX only, SX1280 targets): ###
+# Replaces continuous RX in the disconnected state with a CAD-based
+# duty-cycled scan plus ESP32 light-sleep between windows. Idle power
+# on an RP1 V2 drops from ~288 mW toward ~50-80 mW. Reconnect latency
+# grows with idle time (progressive backoff): <1 s fresh, up to ~10 s
+# after extended idle. Stock behavior unchanged when this is off.
+#-DLOWPOWER_SEARCH
+
 # Use an ELRS TX and RX as a transparent UART over the air
 #-DUSE_AIRPORT_AT_BAUD=9600
